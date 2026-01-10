@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>UPLINK // SECURE SHELL</title>
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
         :root {
             --term-green: #33ff00;
@@ -79,7 +79,7 @@
         .line { display: flex; gap: 10px; animation: textGlitch 0.05s; }
         .ts { color: var(--term-dim); min-width: 80px; }
         .user { font-weight: bold; }
-        .sys { color: #00ffff; font-style: italic; opacity: 0.8; }
+        .sys { color: var(--secondary); font-style: italic; opacity: 0.7; }
         .msg-text { word-break: break-all; }
 
         /* INPUT AREA */
@@ -114,10 +114,12 @@
             justify-content: center; align-items: center;
         }
         .auth-box { width: 300px; text-align: left; }
+        .blink-cursor::after { content: '█'; animation: blink 1s infinite; margin-left: 2px; }
         
-        button { display: none; } 
+        button { display: none; } /* We use Enter key only for hacker feel */
 
         /* --- ANIMATIONS --- */
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
         @keyframes flicker { 0% { opacity: 0.9; } 50% { opacity: 1.0; } 100% { opacity: 0.9; } }
         @keyframes textGlitch { 0% { transform: translateX(2px); } 100% { transform: translateX(0); } }
 
@@ -159,7 +161,7 @@
 
     <div id="terminal" class="hidden">
         <div class="header">
-            <span>UPLINK v2.1 (SECURE) <span style="font-size:0.7em; color:var(--term-dim);">// ENCRYPTED</span></span>
+            <span>UPLINK v2.0 (By Taki Zaidi) <span style="font-size:0.7em; color:var(--term-dim);">// ENCRYPTED</span></span>
             <span id="net-stat" class="status-badge status-offline">OFFLINE</span>
         </div>
 
@@ -174,12 +176,11 @@
 
     <script>
         // --- CONFIGURATION ---
+        // Using HiveMQ Public Broker (WSS Support is reliable)
+        const BROKER = 'wss://broker.hivemq.com:8884/mqtt';
+        const APP_ID = 'uplink_v2_'; // Namespace to prevent collisions
         
-        // IMPORTANT: REPLACE THIS URL WITH YOUR DEPLOYED BACKEND URL (e.g., https://uplink-backend.onrender.com)
-        // For local testing, use 'http://localhost:3001'
-        const BACKEND_URL = 'https://uplink-v2-rydo.vercel.app/'; 
-        
-        let socket;
+        let client;
         let username = '';
         let channel = '';
         let isConnected = false;
@@ -201,7 +202,7 @@
             if (e.key === 'Enter') {
                 const val = e.target.value.trim();
                 if (val.length > 0) {
-                    channel = val; 
+                    channel = APP_ID + val; // e.g. uplink_v2_mySecretChannel
                     e.target.disabled = true;
                     document.getElementById('auth-status').innerText = "> ESTABLISHING UPLINK...";
                     initSystem();
@@ -211,6 +212,7 @@
 
         // --- SYSTEM INIT ---
         function initSystem() {
+            // Switch UI
             setTimeout(() => {
                 document.getElementById('auth-layer').classList.add('hidden');
                 document.getElementById('terminal').classList.remove('hidden');
@@ -218,43 +220,58 @@
                 document.getElementById('cmd-input').focus();
                 
                 printLog("SYSTEM", "INITIALIZING NETWORK PROTOCOLS...");
-                connectSocket();
+                connectMQTT();
             }, 1000);
         }
 
-        // --- SOCKET CONNECTION ---
-        function connectSocket() {
-            // Initialize Socket.io
-            socket = io(BACKEND_URL, {
-                reconnection: true,
-                reconnectionAttempts: 5
+        // --- MQTT CONNECTION ---
+        function connectMQTT() {
+            const clientId = 'uplink_user_' + Math.random().toString(16).substr(2, 8);
+            
+            client = mqtt.connect(BROKER, {
+                keepalive: 60,
+                clientId: clientId,
+                protocolId: 'MQTT',
+                protocolVersion: 4,
+                clean: true,
+                reconnectPeriod: 1000,
+                connectTimeout: 30 * 1000,
             });
 
-            socket.on('connect', () => {
+            client.on('connect', () => {
                 isConnected = true;
                 updateStatus(true);
                 printLog("SYSTEM", "CONNECTION SECURE. HANDSHAKE COMPLETE.");
                 
-                // Join the specific channel
-                socket.emit('join_channel', { username, channel });
-                printLog("SYSTEM", `JOINED FREQUENCY: [${channel}]`);
+                // Subscribe to channel
+                client.subscribe(channel, { qos: 0 }, (err) => {
+                    if (!err) {
+                        printLog("SYSTEM", `JOINED FREQUENCY: [${channel.replace(APP_ID, '')}]`);
+                        publishPayload("SYSTEM", `${username} HAS CONNECTED.`);
+                    }
+                });
             });
 
-            socket.on('receive_message', (data) => {
-                // We display all messages received from server
-                printLog(data.sender, data.text);
+            client.on('message', (topic, message) => {
+                if (topic === channel) {
+                    try {
+                        const payload = JSON.parse(message.toString());
+                        // Don't show my own messages if I sent them (prevents double logging)
+                        // EXCEPT for system messages
+                        if (payload.sender !== username) {
+                            printLog(payload.sender, payload.text);
+                        }
+                    } catch (e) {
+                        console.error("Decryption Fail");
+                    }
+                }
             });
 
-            socket.on('disconnect', () => {
-                isConnected = false;
+            client.on('offline', () => updateStatus(false));
+            client.on('reconnect', () => printLog("SYSTEM", "ATTEMPTING RECONNECT..."));
+            client.on('error', (err) => {
+                printLog("ERROR", "NETWORK FAILURE: " + err);
                 updateStatus(false);
-                printLog("ERROR", "CONNECTION SEVERED.");
-            });
-
-            socket.on('connect_error', (err) => {
-                console.error("Connection Error:", err);
-                // Only log if we aren't already offline to prevent spam
-                if(isConnected) printLog("ERROR", "NETWORK UNREACHABLE.");
             });
         }
 
@@ -277,23 +294,29 @@
 
         function sendMessage(text) {
             if (!isConnected) {
-                printLog("ERROR", "NO UPLINK SIGNAL. CANNOT TRANSMIT.");
+                printLog("ERROR", "NO UPLINK SIGNAL.");
                 return;
             }
-            // Send to server
-            socket.emit('send_message', {
-                channel: channel,
-                sender: username,
+            // 1. Show locally immediately (Optimistic UI)
+            printLog(username, text);
+            // 2. Send to network
+            publishPayload(username, text);
+        }
+
+        function publishPayload(sender, text) {
+            const payload = JSON.stringify({
+                sender: sender,
                 text: text,
                 ts: Date.now()
             });
+            client.publish(channel, payload);
         }
 
         function handleSlashCommand(cmd) {
             if (cmd === '/clear') {
                 document.getElementById('console-output').innerHTML = '';
             } else if (cmd === '/whoami') {
-                printLog("SYSTEM", `USER: ${username} | CHANNEL: ${channel}`);
+                printLog("SYSTEM", `USER: ${username} | CHANNEL: ${channel.replace(APP_ID, '')}`);
             } else {
                 printLog("SYSTEM", "UNKNOWN COMMAND.");
             }
@@ -307,6 +330,7 @@
             
             const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" });
             
+            // Color coding based on sender
             let userClass = 'user';
             let senderDisplay = sender;
             
@@ -314,8 +338,7 @@
                 userClass = 'sys';
                 senderDisplay = '>> SYSTEM';
             } else if (sender === 'ERROR') {
-                userClass = 'status-offline'; 
-                senderDisplay = '!! ERROR';
+                userClass = 'status-offline'; // Red bg
             }
 
             div.innerHTML = `
@@ -340,12 +363,13 @@
             }
         }
 
-        // Auto focus input
+        // Auto focus input if clicked anywhere
         document.body.onclick = () => {
             if (!document.getElementById('terminal').classList.contains('hidden')) {
                 document.getElementById('cmd-input').focus();
             }
         };
+
     </script>
 </body>
 </html>
