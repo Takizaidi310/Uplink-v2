@@ -80,7 +80,7 @@
         .line { display: flex; gap: 10px; animation: textGlitch 0.05s; }
         .ts { color: var(--term-dim); min-width: 80px; }
         .user { font-weight: bold; }
-        .sys { color: var(--secondary); font-style: italic; opacity: 0.7; }
+        .sys { color: var(--term-green); font-style: italic; opacity: 0.7; }
         .msg-text { word-break: break-all; }
 
         /* INPUT AREA */
@@ -115,8 +115,19 @@
             justify-content: center; align-items: center;
         }
         .auth-box { width: 300px; text-align: left; }
-        .blink-cursor::after { content: '█'; animation: blink 1s infinite; margin-left: 2px; }
         
+        /* --- BOOT SCREEN OVERLAY --- */
+        #boot-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: var(--term-bg);
+            z-index: 90;
+            padding: 20px;
+            display: flex; flex-direction: column;
+            justify-content: flex-start;
+            font-size: 12px;
+            color: var(--term-dim);
+        }
+
         button { display: none; } /* We use Enter key only for hacker feel */
 
         /* --- ANIMATIONS --- */
@@ -125,6 +136,7 @@
         @keyframes textGlitch { 0% { transform: translateX(2px); } 100% { transform: translateX(0); } }
 
         .hidden { display: none !important; }
+        .boot-line { margin-bottom: 2px; }
     </style>
 </head>
 <body>
@@ -160,6 +172,8 @@
         </div>
     </div>
 
+    <div id="boot-screen" class="hidden"></div>
+
     <div id="terminal" class="hidden">
         <div class="header">
             <span>UPLINK v2 (By Taki Zaidi) <span style="font-size:0.7em; color:var(--term-green);">// AES-256 ENCRYPTED</span></span>
@@ -167,7 +181,7 @@
         </div>
 
         <div id="console-output">
-            </div>
+        </div>
 
         <div class="input-line">
             <span class="prompt" id="prompt-user">GHOST@UPLINK:~$</span>
@@ -178,18 +192,71 @@
     <script>
         // --- CONFIGURATION ---
         const BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-        // Base topic. Users are separated by the Channel Key logic below.
         const BASE_TOPIC = 'uplink_secure_v21_default_'; 
         
         let client;
         let username = '';
-        let channelKey = ''; // The "Frequency" acts as the Encryption Password
+        let channelKey = ''; 
         let fullTopic = '';
         let isConnected = false;
+        
+        // --- SOUND & VOICE ENGINE ---
+        const SoundFX = {
+            ctx: null,
+            init: function() {
+                if(!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+            },
+            playTone: function(freq, type, duration) {
+                if(!this.ctx) return;
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = type;
+                osc.frequency.value = freq;
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                gain.gain.setValueAtTime(0.05, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+                osc.start();
+                osc.stop(this.ctx.currentTime + duration);
+            },
+            beep: function() { this.playTone(800, 'square', 0.1); },
+            keystroke: function() { this.playTone(600 + Math.random()*200, 'sine', 0.05); },
+            incoming: function() { 
+                this.playTone(1200, 'sine', 0.1); 
+                setTimeout(() => this.playTone(1800, 'sine', 0.1), 100);
+            },
+            boot: function() {
+                this.playTone(100, 'sawtooth', 0.5);
+                setTimeout(() => this.playTone(200, 'sawtooth', 0.5), 100);
+            }
+        };
+
+        const VoiceSys = {
+            enabled: true,
+            synth: window.speechSynthesis,
+            speak: function(text) {
+                if(!this.enabled) return;
+                // Strip timestamps or extra chars if needed, simplified here
+                const utter = new SpeechSynthesisUtterance(text);
+                const voices = this.synth.getVoices();
+                // Try to find a robotic/technical voice
+                utter.voice = voices.find(v => v.name.includes('Google US English')) || voices[0];
+                utter.pitch = 0.8; // Robotic low pitch
+                utter.rate = 1.1;  // Slightly faster
+                utter.volume = 0.6;
+                this.synth.speak(utter);
+            }
+        };
 
         // --- AUTH LOGIC ---
         function handleAuth(e) {
+            // Initialize Audio Context on first interaction
+            SoundFX.init();
+            
+            if(e.key !== 'Enter') SoundFX.keystroke();
+
             if (e.key === 'Enter') {
+                SoundFX.beep();
                 const val = e.target.value.trim();
                 if (val.length > 0) {
                     username = val.toUpperCase();
@@ -201,50 +268,82 @@
         }
 
         function handleConnect(e) {
+            if(e.key !== 'Enter') SoundFX.keystroke();
+
             if (e.key === 'Enter') {
+                SoundFX.beep();
                 const val = e.target.value.trim();
                 if (val.length > 0) {
-                    // The 'val' is now the Encryption Key
                     channelKey = val; 
-                    // We use a hashed version of the key to decide the topic, 
-                    // so people with different keys don't even see the traffic (optional),
-                    // OR we can share the topic and let encryption filter it. 
-                    // Let's share a topic to demonstrate the "Shield" filtering bad packets.
                     fullTopic = BASE_TOPIC + 'global'; 
 
                     e.target.disabled = true;
                     document.getElementById('auth-status').innerText = "> GENERATING AES KEYS...";
                     
                     setTimeout(() => {
-                        document.getElementById('auth-status').innerText = "> ESTABLISHING UPLINK...";
-                        initSystem();
+                        document.getElementById('auth-layer').classList.add('hidden');
+                        runBootSequence();
                     }, 800);
                 }
             }
         }
 
+        // --- BOOT SEQUENCE ANIMATION ---
+        function runBootSequence() {
+            const bootScreen = document.getElementById('boot-screen');
+            bootScreen.classList.remove('hidden');
+            
+            const lines = [
+                "INITIALIZING BIOS...",
+                "CHECKING MEMORY: 64TB OK",
+                "LOADING KERNEL v5.14.2...",
+                "MOUNTING VIRTUAL DRIVES...",
+                "BYPASSING REGIONAL FIREWALLS...",
+                "ENCRYPTING CONNECTION (AES-256)...",
+                "ESTABLISHING UPLINK TO NODE 12..."
+            ];
+
+            let i = 0;
+            SoundFX.boot();
+
+            function printLine() {
+                if(i < lines.length) {
+                    const p = document.createElement('div');
+                    p.className = 'boot-line';
+                    p.innerText = `> ${lines[i]}`;
+                    bootScreen.appendChild(p);
+                    SoundFX.keystroke();
+                    i++;
+                    setTimeout(printLine, 150 + Math.random() * 300);
+                } else {
+                    setTimeout(() => {
+                        bootScreen.classList.add('hidden');
+                        initSystem();
+                    }, 800);
+                }
+            }
+            printLine();
+        }
+
         // --- SYSTEM INIT ---
         function initSystem() {
-            setTimeout(() => {
-                document.getElementById('auth-layer').classList.add('hidden');
-                document.getElementById('terminal').classList.remove('hidden');
-                document.getElementById('prompt-user').innerText = `${username}@UPLINK:~$`;
-                document.getElementById('cmd-input').focus();
-                
-                printLog("SYSTEM", "INITIALIZING NETWORK PROTOCOLS...");
-                printLog("SYSTEM", "ACTIVATE: SECURE SHIELD (AES-256)...");
-                connectMQTT();
-            }, 1000);
+            document.getElementById('terminal').classList.remove('hidden');
+            document.getElementById('prompt-user').innerText = `${username}@UPLINK:~$`;
+            document.getElementById('cmd-input').focus();
+            
+            printLog("SYSTEM", "INITIALIZING NETWORK PROTOCOLS...");
+            printLog("SYSTEM", "ACTIVATE: SECURE SHIELD (AES-256)...");
+            
+            // Initial Voice Welcome
+            VoiceSys.speak("Welcome to Uplink. Secure connection establishing.");
+            
+            connectMQTT();
         }
 
         // --- SECURE SHIELD PROTOCOL ---
-        // Prevents Spoofing and Hacking by wrapping data in AES encryption
-        
         function shieldPack(dataObject) {
             try {
-                // 1. Convert Payload to String
                 const rawString = JSON.stringify(dataObject);
-                // 2. Encrypt using the Channel Frequency (Key)
                 const encrypted = CryptoJS.AES.encrypt(rawString, channelKey).toString();
                 return encrypted;
             } catch (e) {
@@ -255,17 +354,11 @@
 
         function shieldUnpack(cipherText) {
             try {
-                // 1. Decrypt using the Channel Frequency (Key)
                 const bytes = CryptoJS.AES.decrypt(cipherText, channelKey);
                 const originalText = bytes.toString(CryptoJS.enc.Utf8);
-                
-                // 2. If Key is wrong, originalText will be empty
                 if (!originalText) return null;
-
-                // 3. Parse JSON
                 return JSON.parse(originalText);
             } catch (e) {
-                // Return null if decryption fails (Spoofing attempt or wrong key)
                 return null;
             }
         }
@@ -288,11 +381,11 @@
                 isConnected = true;
                 updateStatus(true);
                 printLog("SYSTEM", "CONNECTION SECURE. HANDSHAKE COMPLETE.");
+                VoiceSys.speak("Online.");
                 
                 client.subscribe(fullTopic, { qos: 0 }, (err) => {
                     if (!err) {
                         printLog("SYSTEM", `JOINED ENCRYPTED CHANNEL`);
-                        // Announce presence (Encrypted)
                         const payload = { sender: "SYSTEM", text: `${username} HAS CONNECTED.`, ts: Date.now() };
                         client.publish(fullTopic, shieldPack(payload));
                     }
@@ -302,18 +395,17 @@
             client.on('message', (topic, message) => {
                 if (topic === fullTopic) {
                     const encryptedMsg = message.toString();
-                    
-                    // ATTEMPT DECRYPTION
                     const payload = shieldUnpack(encryptedMsg);
 
                     if (payload) {
-                        // Success: Valid Key, Valid Message
                         if (payload.sender !== username) {
+                            SoundFX.incoming();
                             printLog(payload.sender, payload.text);
+                            // Read out message if not system
+                            if(payload.sender !== 'SYSTEM') {
+                                VoiceSys.speak(payload.text);
+                            }
                         }
-                    } else {
-                        // Failure: Message exists, but we can't read it (Wrong Key / Hacker)
-                        // console.log("Blocked spoofed/unreadable packet"); 
                     }
                 }
             });
@@ -328,7 +420,10 @@
 
         // --- MESSAGING ---
         function handleCommand(e) {
+            if(e.key !== 'Enter') SoundFX.keystroke();
+
             if (e.key === 'Enter') {
+                SoundFX.beep();
                 const input = e.target;
                 const text = input.value.trim();
                 
@@ -349,28 +444,36 @@
                 return;
             }
             
-            // 1. Create Data Object
             const data = {
                 sender: username,
                 text: text,
                 ts: Date.now()
             };
 
-            // 2. PACK WITH SECURE SHIELD
             const securePacket = shieldPack(data);
 
             if (securePacket) {
-                // 3. Show locally and Send
                 printLog(username, text);
                 client.publish(fullTopic, securePacket);
             }
         }
 
         function handleSlashCommand(cmd) {
-            if (cmd === '/clear') {
+            const parts = cmd.split(' ');
+            const mainCmd = parts[0].toLowerCase();
+
+            if (mainCmd === '/clear') {
                 document.getElementById('console-output').innerHTML = '';
-            } else if (cmd === '/whoami') {
+            } else if (mainCmd === '/whoami') {
                 printLog("SYSTEM", `USER: ${username} | KEY-HASH: ${channelKey.substring(0,4)}***`);
+                VoiceSys.speak("User Verification Complete.");
+            } else if (mainCmd === '/mute') {
+                VoiceSys.enabled = false;
+                printLog("SYSTEM", "AUDIO OUTPUT: MUTED");
+            } else if (mainCmd === '/unmute') {
+                VoiceSys.enabled = true;
+                printLog("SYSTEM", "AUDIO OUTPUT: ACTIVE");
+                VoiceSys.speak("Audio active.");
             } else {
                 printLog("SYSTEM", "UNKNOWN COMMAND.");
             }
