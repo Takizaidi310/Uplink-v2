@@ -2,15 +2,17 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>UPLINK // SECURE SHELL</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>UPLINK v4 // OMEGA SHELL</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    
     <style>
         :root {
             --term-green: #33ff00;
             --term-dim: #1a8000;
-            --term-bg: #0a0a0a;
+            --term-bg: #050505;
+            --term-panel: #111;
             --alert: #ff3333;
             --font-stack: 'Courier New', 'Lucida Console', monospace;
         }
@@ -23,212 +25,259 @@
             font-family: var(--font-stack);
             height: 100vh;
             overflow: hidden;
-            text-shadow: 0 0 4px rgba(51, 255, 0, 0.5);
             font-size: 14px;
+            text-shadow: 0 0 2px rgba(51, 255, 0, 0.4);
         }
 
-        /* --- CRT EFFECT --- */
+        /* --- VISUAL EFFECTS --- */
         .scanlines {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
             background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), 
                         linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
             background-size: 100% 2px, 3px 100%;
-            pointer-events: none;
-            z-index: 999;
-            opacity: 0.6;
+            pointer-events: none; z-index: 999; opacity: 0.4;
+        }
+        .vignette {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: radial-gradient(circle, rgba(0,0,0,0) 60%, rgba(0,0,0,0.8) 100%);
+            pointer-events: none; z-index: 998;
         }
 
-        .flicker { animation: flicker 0.35s infinite; pointer-events: none; position: fixed; top:0; left:0; width:100%; height:100%; background:rgba(51,255,0,0.02); z-index:998; }
-
-        /* --- TERMINAL LAYOUT --- */
-        #terminal {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            padding: 20px;
-            max-width: 1000px;
-            margin: 0 auto;
-            position: relative;
-            z-index: 10;
+        /* --- LAYOUT --- */
+        #main-ui {
+            display: flex; flex-direction: column; height: 100%;
+            position: relative; z-index: 10;
         }
+
+        /* SLIDING VIDEO PANEL */
+        #call-panel {
+            position: fixed; top: 0; left: 0; width: 100%; 
+            height: 40vh; min-height: 250px;
+            background: var(--term-panel);
+            border-bottom: 2px solid var(--term-green);
+            transform: translateY(-100%);
+            transition: transform 0.4s cubic-bezier(0.4, 0.0, 0.2, 1);
+            z-index: 50;
+            display: flex; flex-direction: column;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+        }
+        #call-panel.open { transform: translateY(0); }
+
+        #video-grid {
+            flex-grow: 1; padding: 10px;
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px; overflow-y: auto;
+        }
+        
+        .vid-container {
+            position: relative; border: 1px solid var(--term-dim);
+            background: #000; aspect-ratio: 4/3;
+        }
+        video {
+            width: 100%; height: 100%; object-fit: cover;
+            filter: sepia(1) hue-rotate(50deg) contrast(1.2) saturate(0.8);
+        }
+        .vid-label {
+            position: absolute; bottom: 0; left: 0; width: 100%;
+            background: rgba(0,0,0,0.7); color: var(--term-green);
+            font-size: 10px; padding: 2px 4px; text-align: center;
+        }
+
+        /* CALL CONTROLS */
+        #call-controls {
+            display: flex; justify-content: center; gap: 10px; padding: 10px;
+            background: #000; border-top: 1px solid var(--term-dim);
+        }
+        .btn-control {
+            background: transparent; border: 1px solid var(--term-green); color: var(--term-green);
+            padding: 5px 15px; cursor: pointer; font-family: var(--font-stack); text-transform: uppercase;
+            font-size: 10px; min-width: 80px;
+        }
+        .btn-control:hover { background: var(--term-green); color: black; }
+        .btn-danger { border-color: var(--alert); color: var(--alert); }
+        .btn-danger:hover { background: var(--alert); color: black; }
+        .btn-active { background: var(--term-green); color: black; }
 
         /* HEADER */
         .header {
-            border-bottom: 2px solid var(--term-green);
-            padding-bottom: 10px;
-            margin-bottom: 10px;
-            display: flex; justify-content: space-between;
-            text-transform: uppercase;
-            font-weight: bold;
+            padding: 10px 15px; border-bottom: 1px solid var(--term-dim);
+            display: flex; justify-content: space-between; align-items: center;
+            background: rgba(0,0,0,0.9); flex-shrink: 0;
         }
-        .status-badge { background: var(--term-green); color: black; padding: 2px 5px; }
-        .status-offline { background: var(--alert); color: black; }
+        .status-badge { background: var(--term-green); color: black; padding: 2px 6px; font-weight: bold; font-size: 0.8rem; }
+        .status-offline { background: var(--alert); }
+        
+        #active-nodes {
+            font-size: 0.7em; margin-left: 15px; color: var(--term-dim);
+            display: none; 
+        }
+        @media(min-width: 600px) { #active-nodes { display: inline; } }
 
-        /* LOG AREA */
+        /* TOGGLE BUTTON FOR PANEL */
+        #panel-toggle {
+            cursor: pointer; border: 1px solid var(--term-dim); padding: 2px 8px;
+            font-size: 0.8rem; margin-right: 10px; display: none;
+        }
+        #panel-toggle:hover { border-color: var(--term-green); }
+
+        /* CHAT AREA */
         #console-output {
-            flex-grow: 1;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-            padding-right: 10px;
-            scrollbar-width: none; /* Firefox */
+            flex-grow: 1; overflow-y: auto; padding: 15px;
+            display: flex; flex-direction: column; gap: 6px;
+            scrollbar-width: thin; scrollbar-color: var(--term-dim) transparent;
         }
-        #console-output::-webkit-scrollbar { display: none; } /* Chrome */
-
-        /* MESSAGES */
-        .line { display: flex; gap: 10px; animation: textGlitch 0.05s; }
-        .ts { color: var(--term-dim); min-width: 80px; }
-        .user { font-weight: bold; }
-        .sys { color: var(--term-green); font-style: italic; opacity: 0.7; }
-        .msg-text { word-break: break-all; }
+        
+        .line { display: flex; gap: 10px; line-height: 1.4; animation: glitchText 0.1s; }
+        .ts { color: var(--term-dim); flex-shrink: 0; width: 70px; font-size: 0.85em; }
+        .user { font-weight: bold; flex-shrink: 0; color: #fff; }
+        .sys { color: var(--term-green); font-style: italic; opacity: 0.8; }
+        .msg-content { word-wrap: break-word; overflow-wrap: anywhere; max-width: 100%; color: var(--term-green); }
+        
+        /* MEDIA IN CHAT */
+        .chat-img { 
+            max-width: 250px; border: 1px solid var(--term-dim); margin-top: 5px; 
+            filter: grayscale(100%) contrast(1.2); transition: 0.3s;
+        }
+        .chat-img:hover { filter: none; }
+        .chat-video { max-width: 250px; border: 1px solid var(--term-dim); margin-top: 5px; }
+        .file-link { 
+            display: inline-block; border: 1px solid var(--term-green); padding: 5px 10px; 
+            margin-top: 5px; text-decoration: none; color: var(--term-green); font-size: 0.8em;
+        }
+        .file-link:hover { background: var(--term-green); color: black; }
 
         /* INPUT AREA */
-        .input-line {
-            display: flex;
-            align-items: center;
-            border-top: 1px solid var(--term-dim);
-            padding-top: 10px;
-            margin-top: 10px;
-            background: var(--term-bg);
+        .input-bar {
+            display: flex; align-items: center;
+            border-top: 1px solid var(--term-dim); padding: 10px;
+            background: var(--term-bg); flex-shrink: 0;
         }
+        .prompt { margin-right: 10px; font-weight: bold; color: var(--term-green); display:none; }
+        @media(min-width: 600px) { .prompt { display: inline; } }
         
-        .prompt { margin-right: 10px; font-weight: bold; }
-        
-        input {
-            flex-grow: 1;
-            background: transparent;
-            border: none;
-            color: var(--term-green);
-            font-family: var(--font-stack);
-            font-size: 1rem;
+        #cmd-input {
+            flex-grow: 1; background: transparent; border: none;
+            color: var(--term-green); font-family: var(--font-stack); font-size: 1rem;
             outline: none;
-            caret-color: var(--term-green);
         }
+        .upload-btn {
+            border: 1px solid var(--term-dim); color: var(--term-dim);
+            padding: 5px 10px; cursor: pointer; margin-right: 10px; font-size: 0.9em;
+        }
+        .upload-btn:hover { color: var(--term-green); border-color: var(--term-green); }
 
-        /* --- LOGIN OVERLAY --- */
-        #auth-layer {
+        /* AUTH SCREEN */
+        #auth-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: var(--term-bg);
-            z-index: 100;
-            display: flex; flex-direction: column;
-            justify-content: center; align-items: center;
+            background: var(--term-bg); z-index: 100;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
         }
-        .auth-box { width: 300px; text-align: left; }
+        .ascii-art { font-size: 10px; line-height: 10px; white-space: pre; margin-bottom: 20px; color: var(--term-green); }
+        .auth-input { 
+            background: transparent; border: none; border-bottom: 2px solid var(--term-dim);
+            color: var(--term-green); font-family: var(--font-stack); font-size: 1.2rem;
+            text-align: center; width: 200px; outline: none; margin-top: 10px;
+        }
         
-        /* --- BOOT SCREEN OVERLAY --- */
-        #boot-screen {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: var(--term-bg);
-            z-index: 90;
-            padding: 20px;
-            display: flex; flex-direction: column;
-            justify-content: flex-start;
-            font-size: 12px;
-            color: var(--term-dim);
-        }
-
-        button { display: none; } /* We use Enter key only for hacker feel */
-
-        /* --- ANIMATIONS --- */
-        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
-        @keyframes flicker { 0% { opacity: 0.9; } 50% { opacity: 1.0; } 100% { opacity: 0.9; } }
-        @keyframes textGlitch { 0% { transform: translateX(2px); } 100% { transform: translateX(0); } }
-
         .hidden { display: none !important; }
-        .boot-line { margin-bottom: 2px; }
+        @keyframes glitchText { 0% { opacity: 0.8; transform: translateX(-2px); } 100% { opacity: 1; transform: translateX(0); } }
     </style>
 </head>
 <body>
 
     <div class="scanlines"></div>
-    <div class="flicker"></div>
+    <div class="vignette"></div>
 
-    <div id="auth-layer">
-        <div class="auth-box">
-            <pre style="font-size: 0.6rem; margin-bottom: 20px; line-height: 10px;">
+    <div id="auth-overlay">
+        <div class="ascii-art">
   _   _  ____  _      ___  _   _  _  __
  | | | ||  _ \| |    |_ _|| \ | || |/ /
  | | | || |_) | |     | | |  \| || ' / 
  | |_| ||  __/| |___  | | | |\  || . \ 
   \___/ |_|   |_____||___||_| \_||_|\_\
-            </pre>
-            <p>> INITIALIZING SECURE HANDSHAKE...</p>
-            <br>
-            <p>ENTER CODENAME:</p>
-            <div style="display:flex;">
-                <span>></span>
-                <input type="text" id="auth-user" autofocus onkeydown="handleAuth(event)">
-            </div>
-            <br>
-            <div id="freq-section" class="hidden">
-                <p>ENTER CHANNEL FREQ (KEY):</p>
-                <div style="display:flex;">
-                    <span>></span>
-                    <input type="text" id="auth-freq" onkeydown="handleConnect(event)">
-                </div>
-            </div>
-            <p id="auth-status" style="margin-top:20px; color:var(--term-dim);"></p>
         </div>
+        <p>> ESTABLISHING SECURE HANDSHAKE...</p>
+        <br>
+        <div id="step-1">
+            <p>ENTER OPERATIVE CODENAME:</p>
+            <input type="text" id="auth-user" class="auth-input" autofocus onkeydown="handleAuth(event)">
+        </div>
+        
+        <div id="step-2" class="hidden" style="text-align:center; margin-top:20px;">
+            <p>ENTER ENCRYPTION KEY (CHANNEL):</p>
+            <input type="text" id="auth-freq" class="auth-input" onkeydown="handleConnect(event)">
+        </div>
+        <div id="boot-log" style="margin-top:20px; color:var(--term-dim); font-size:12px; height:20px;"></div>
     </div>
 
-    <div id="boot-screen" class="hidden"></div>
+    <div id="main-ui" class="hidden">
+        
+        <div id="call-panel">
+            <div id="video-grid"></div>
+            <div id="call-controls">
+                <button class="btn-control" onclick="toggleMute()" id="btn-mute">MUTE MIC</button>
+                <button class="btn-control" onclick="toggleCam()" id="btn-cam">CAM OFF</button>
+                <button class="btn-control" onclick="togglePanel()">HIDE PANEL</button>
+                <button class="btn-control btn-danger" onclick="leaveCall()">END CALL</button>
+            </div>
+        </div>
 
-    <div id="terminal" class="hidden">
         <div class="header">
-            <span>UPLINK v2 (By Taki Zaidi) <span style="font-size:0.7em; color:var(--term-green);">// AES-256 ENCRYPTED</span></span>
+            <div style="display:flex; align-items:center;">
+                <span id="panel-toggle" onclick="togglePanel()">[CAM]</span>
+                <span>UPLINK v4 Made by Taki Zaidi<span style="font-size:0.7em; color:var(--term-dim);">// SECURE</span></span>
+                <span id="active-nodes">NODES: 0</span>
+            </div>
             <span id="net-stat" class="status-badge status-offline">OFFLINE</span>
         </div>
 
-        <div id="console-output">
-        </div>
+        <div id="console-output"></div>
 
-        <div class="input-line">
-            <span class="prompt" id="prompt-user">GHOST@UPLINK:~$</span>
-            <input type="text" id="cmd-input" autocomplete="off" onkeydown="handleCommand(event)">
+        <div class="input-bar">
+            <span class="upload-btn" onclick="document.getElementById('file-upload').click()">[+] FILE</span>
+            <input type="file" id="file-upload" hidden onchange="handleFileUpload(this)">
+            <span class="prompt" id="prompt-user">GHOST:~$</span>
+            <input type="text" id="cmd-input" autocomplete="off" placeholder="Message or /cmd..." onkeydown="handleCommand(event)">
         </div>
     </div>
 
     <script>
         // --- CONFIGURATION ---
         const BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-        const BASE_TOPIC = 'uplink_secure_v21_default_'; 
+        const BASE_TOPIC = 'uplink_omega_v4_'; 
         
+        // --- STATE ---
         let client;
         let username = '';
-        let channelKey = ''; 
+        let channelKey = '';
         let fullTopic = '';
+        let signalTopic = '';
         let isConnected = false;
+        let activeNodes = new Map(); // Stores { username: lastPingTime }
         
+        // WebRTC
+        let localStream = null;
+        let peers = {}; 
+        let isInCall = false;
+        const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
         // --- SOUND & VOICE ENGINE ---
         const SoundFX = {
             ctx: null,
-            init: function() {
-                if(!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-            },
-            playTone: function(freq, type, duration) {
+            init: function() { if(!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); },
+            play: function(freq, type, dur, vol=0.05) {
                 if(!this.ctx) return;
                 const osc = this.ctx.createOscillator();
                 const gain = this.ctx.createGain();
-                osc.type = type;
-                osc.frequency.value = freq;
-                osc.connect(gain);
-                gain.connect(this.ctx.destination);
-                gain.gain.setValueAtTime(0.05, this.ctx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
-                osc.start();
-                osc.stop(this.ctx.currentTime + duration);
+                osc.type = type; osc.frequency.value = freq;
+                osc.connect(gain); gain.connect(this.ctx.destination);
+                gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + dur);
+                osc.start(); osc.stop(this.ctx.currentTime + dur);
             },
-            beep: function() { this.playTone(800, 'square', 0.1); },
-            keystroke: function() { this.playTone(600 + Math.random()*200, 'sine', 0.05); },
-            incoming: function() { 
-                this.playTone(1200, 'sine', 0.1); 
-                setTimeout(() => this.playTone(1800, 'sine', 0.1), 100);
-            },
-            boot: function() {
-                this.playTone(100, 'sawtooth', 0.5);
-                setTimeout(() => this.playTone(200, 'sawtooth', 0.5), 100);
-            }
+            click: function() { this.play(800, 'square', 0.05); },
+            msg: function() { this.play(1200, 'sine', 0.1); setTimeout(()=>this.play(1800,'sine',0.1), 100); },
+            alert: function() { this.play(150, 'sawtooth', 0.3); }
         };
 
         const VoiceSys = {
@@ -236,294 +285,351 @@
             synth: window.speechSynthesis,
             speak: function(text) {
                 if(!this.enabled) return;
-                // Strip timestamps or extra chars if needed, simplified here
+                // Simple filter to not read URLs or heavy data
+                if(text.includes('data:image') || text.length > 200) return; 
+                
                 const utter = new SpeechSynthesisUtterance(text);
                 const voices = this.synth.getVoices();
-                // Try to find a robotic/technical voice
                 utter.voice = voices.find(v => v.name.includes('Google US English')) || voices[0];
-                utter.pitch = 0.8; // Robotic low pitch
-                utter.rate = 1.1;  // Slightly faster
-                utter.volume = 0.6;
+                utter.pitch = 0.8; utter.rate = 1.1; utter.volume = 0.6;
                 this.synth.speak(utter);
             }
         };
 
         // --- AUTH LOGIC ---
         function handleAuth(e) {
-            // Initialize Audio Context on first interaction
             SoundFX.init();
-            
-            if(e.key !== 'Enter') SoundFX.keystroke();
-
-            if (e.key === 'Enter') {
-                SoundFX.beep();
-                const val = e.target.value.trim();
-                if (val.length > 0) {
-                    username = val.toUpperCase();
-                    e.target.disabled = true;
-                    document.getElementById('freq-section').classList.remove('hidden');
-                    document.getElementById('auth-freq').focus();
-                }
+            if(e.key === 'Enter' && e.target.value.trim()) {
+                SoundFX.click();
+                username = e.target.value.trim().toUpperCase();
+                document.getElementById('step-1').classList.add('hidden');
+                document.getElementById('step-2').classList.remove('hidden');
+                document.getElementById('auth-freq').focus();
             }
         }
 
         function handleConnect(e) {
-            if(e.key !== 'Enter') SoundFX.keystroke();
-
-            if (e.key === 'Enter') {
-                SoundFX.beep();
-                const val = e.target.value.trim();
-                if (val.length > 0) {
-                    channelKey = val; 
-                    fullTopic = BASE_TOPIC + 'global'; 
-
-                    e.target.disabled = true;
-                    document.getElementById('auth-status').innerText = "> GENERATING AES KEYS...";
-                    
-                    setTimeout(() => {
-                        document.getElementById('auth-layer').classList.add('hidden');
-                        runBootSequence();
-                    }, 800);
-                }
-            }
-        }
-
-        // --- BOOT SEQUENCE ANIMATION ---
-        function runBootSequence() {
-            const bootScreen = document.getElementById('boot-screen');
-            bootScreen.classList.remove('hidden');
-            
-            const lines = [
-                "INITIALIZING BIOS...",
-                "CHECKING MEMORY: 64TB OK",
-                "LOADING KERNEL v5.14.2...",
-                "MOUNTING VIRTUAL DRIVES...",
-                "BYPASSING REGIONAL FIREWALLS...",
-                "ENCRYPTING CONNECTION (AES-256)...",
-                "ESTABLISHING UPLINK TO NODE 12..."
-            ];
-
-            let i = 0;
-            SoundFX.boot();
-
-            function printLine() {
-                if(i < lines.length) {
-                    const p = document.createElement('div');
-                    p.className = 'boot-line';
-                    p.innerText = `> ${lines[i]}`;
-                    bootScreen.appendChild(p);
-                    SoundFX.keystroke();
-                    i++;
-                    setTimeout(printLine, 150 + Math.random() * 300);
-                } else {
-                    setTimeout(() => {
-                        bootScreen.classList.add('hidden');
+            if(e.key === 'Enter' && e.target.value.trim()) {
+                SoundFX.click();
+                channelKey = e.target.value.trim();
+                fullTopic = BASE_TOPIC + 'chat_' + channelKey; 
+                signalTopic = BASE_TOPIC + 'sig_' + CryptoJS.MD5(channelKey).toString();
+                
+                e.target.disabled = true;
+                const log = document.getElementById('boot-log');
+                
+                let steps = ["INITIALIZING BIOS...", "BYPASSING FIREWALL...", "ENCRYPTING STREAM...", "ACCESS GRANTED."];
+                let i = 0;
+                let int = setInterval(() => {
+                    if(i < steps.length) {
+                        log.innerText = "> " + steps[i];
+                        SoundFX.click();
+                        i++;
+                    } else {
+                        clearInterval(int);
+                        document.getElementById('auth-overlay').classList.add('hidden');
                         initSystem();
-                    }, 800);
-                }
+                    }
+                }, 400);
             }
-            printLine();
         }
 
-        // --- SYSTEM INIT ---
         function initSystem() {
-            document.getElementById('terminal').classList.remove('hidden');
-            document.getElementById('prompt-user').innerText = `${username}@UPLINK:~$`;
-            document.getElementById('cmd-input').focus();
-            
-            printLog("SYSTEM", "INITIALIZING NETWORK PROTOCOLS...");
-            printLog("SYSTEM", "ACTIVATE: SECURE SHIELD (AES-256)...");
-            
-            // Initial Voice Welcome
-            VoiceSys.speak("Welcome to Uplink. Secure connection establishing.");
-            
+            document.getElementById('main-ui').classList.remove('hidden');
+            document.getElementById('prompt-user').innerText = `${username}:~$`;
+            printLog("SYSTEM", `WELCOME AGENT ${username}. SECURE SHELL ACTIVE.`);
+            VoiceSys.speak("System online.");
             connectMQTT();
-        }
-
-        // --- SECURE SHIELD PROTOCOL ---
-        function shieldPack(dataObject) {
-            try {
-                const rawString = JSON.stringify(dataObject);
-                const encrypted = CryptoJS.AES.encrypt(rawString, channelKey).toString();
-                return encrypted;
-            } catch (e) {
-                printLog("ERROR", "ENCRYPTION FAILURE");
-                return null;
-            }
-        }
-
-        function shieldUnpack(cipherText) {
-            try {
-                const bytes = CryptoJS.AES.decrypt(cipherText, channelKey);
-                const originalText = bytes.toString(CryptoJS.enc.Utf8);
-                if (!originalText) return null;
-                return JSON.parse(originalText);
-            } catch (e) {
-                return null;
-            }
-        }
-
-        // --- MQTT CONNECTION ---
-        function connectMQTT() {
-            const clientId = 'uplink_agent_' + Math.random().toString(16).substr(2, 8);
             
-            client = mqtt.connect(BROKER, {
-                keepalive: 60,
-                clientId: clientId,
-                protocolId: 'MQTT',
-                protocolVersion: 4,
-                clean: true,
-                reconnectPeriod: 1000,
-                connectTimeout: 30 * 1000,
-            });
+            // Heartbeat Loop
+            setInterval(() => {
+                publish(fullTopic, { type: 'heartbeat', sender: username });
+                pruneActiveNodes();
+            }, 5000);
+        }
+
+        // --- ENCRYPTION ---
+        function pack(data) {
+            try { return CryptoJS.AES.encrypt(JSON.stringify(data), channelKey).toString(); } catch(e){ return null; }
+        }
+        function unpack(ciphertext) {
+            try { return JSON.parse(CryptoJS.AES.decrypt(ciphertext, channelKey).toString(CryptoJS.enc.Utf8)); } catch(e){ return null; }
+        }
+
+        // --- MQTT ---
+        function connectMQTT() {
+            const clientId = 'uplink_usr_' + Math.random().toString(16).substr(2, 8);
+            client = mqtt.connect(BROKER, { keepalive: 60, clientId: clientId });
 
             client.on('connect', () => {
                 isConnected = true;
                 updateStatus(true);
-                printLog("SYSTEM", "CONNECTION SECURE. HANDSHAKE COMPLETE.");
-                VoiceSys.speak("Online.");
-                
-                client.subscribe(fullTopic, { qos: 0 }, (err) => {
-                    if (!err) {
-                        printLog("SYSTEM", `JOINED ENCRYPTED CHANNEL`);
-                        const payload = { sender: "SYSTEM", text: `${username} HAS CONNECTED.`, ts: Date.now() };
-                        client.publish(fullTopic, shieldPack(payload));
-                    }
-                });
+                client.subscribe(fullTopic);
+                client.subscribe(signalTopic);
+                publish(fullTopic, { type: 'join', sender: username });
             });
 
-            client.on('message', (topic, message) => {
-                if (topic === fullTopic) {
-                    const encryptedMsg = message.toString();
-                    const payload = shieldUnpack(encryptedMsg);
+            client.on('message', (topic, msg) => {
+                const payload = unpack(msg.toString());
+                if(!payload) return;
 
-                    if (payload) {
-                        if (payload.sender !== username) {
-                            SoundFX.incoming();
-                            printLog(payload.sender, payload.text);
-                            // Read out message if not system
-                            if(payload.sender !== 'SYSTEM') {
-                                VoiceSys.speak(payload.text);
-                            }
-                        }
-                    }
-                }
+                if (topic === fullTopic) handleChat(payload);
+                if (topic === signalTopic) handleSignal(payload);
             });
 
             client.on('offline', () => updateStatus(false));
-            client.on('reconnect', () => printLog("SYSTEM", "ATTEMPTING RECONNECT..."));
-            client.on('error', (err) => {
-                printLog("ERROR", "NETWORK FAILURE: " + err);
-                updateStatus(false);
-            });
         }
 
-        // --- MESSAGING ---
+        function publish(topic, data) {
+            if(!isConnected) return;
+            const encrypted = pack(data);
+            if(encrypted) client.publish(topic, encrypted);
+        }
+
+        // --- CHAT & LOGIC ---
         function handleCommand(e) {
-            if(e.key !== 'Enter') SoundFX.keystroke();
+            if(e.key === 'Enter') {
+                const val = e.target.value.trim();
+                e.target.value = '';
+                if(!val) return;
+                SoundFX.click();
 
-            if (e.key === 'Enter') {
-                SoundFX.beep();
-                const input = e.target;
-                const text = input.value.trim();
-                
-                if (text) {
-                    if (text.startsWith('/')) {
-                        handleSlashCommand(text);
-                    } else {
-                        sendMessage(text);
-                    }
+                if(val.startsWith('/')) {
+                    const parts = val.split(' ');
+                    const cmd = parts[0].toLowerCase();
+                    if(cmd === '/upload') document.getElementById('file-upload').click();
+                    else if(cmd === '/call') startCall();
+                    else if(cmd === '/mute') { VoiceSys.enabled = false; printLog("SYSTEM", "VOICE OUTPUT MUTED."); }
+                    else if(cmd === '/unmute') { VoiceSys.enabled = true; printLog("SYSTEM", "VOICE OUTPUT ACTIVE."); }
+                    else if(cmd === '/users') listUsers();
+                    else if(cmd === '/clear') document.getElementById('console-output').innerHTML = '';
+                    else if(cmd === '/help') printLog("SYSTEM", "CMDS: /upload, /call, /mute, /unmute, /users, /clear");
+                    else printLog("SYSTEM", "UNKNOWN COMMAND.");
+                } else {
+                    // Send message
+                    publish(fullTopic, { type: 'msg', sender: username, text: val, ts: Date.now() });
+                    // Echo to self immediately (Feature Restored)
+                    printLog(username, val);
                 }
-                input.value = '';
             }
         }
 
-        function sendMessage(text) {
-            if (!isConnected) {
-                printLog("ERROR", "NO UPLINK SIGNAL.");
-                return;
-            }
-            
-            const data = {
-                sender: username,
-                text: text,
-                ts: Date.now()
-            };
+        function handleChat(data) {
+            // Update presence for everyone who talks
+            updateActiveNode(data.sender);
 
-            const securePacket = shieldPack(data);
+            if(data.sender === username) return; // Ignore self reflection from server
 
-            if (securePacket) {
-                printLog(username, text);
-                client.publish(fullTopic, securePacket);
-            }
-        }
-
-        function handleSlashCommand(cmd) {
-            const parts = cmd.split(' ');
-            const mainCmd = parts[0].toLowerCase();
-
-            if (mainCmd === '/clear') {
-                document.getElementById('console-output').innerHTML = '';
-            } else if (mainCmd === '/whoami') {
-                printLog("SYSTEM", `USER: ${username} | KEY-HASH: ${channelKey.substring(0,4)}***`);
-                VoiceSys.speak("User Verification Complete.");
-            } else if (mainCmd === '/mute') {
-                VoiceSys.enabled = false;
-                printLog("SYSTEM", "AUDIO OUTPUT: MUTED");
-            } else if (mainCmd === '/unmute') {
-                VoiceSys.enabled = true;
-                printLog("SYSTEM", "AUDIO OUTPUT: ACTIVE");
-                VoiceSys.speak("Audio active.");
-            } else {
-                printLog("SYSTEM", "UNKNOWN COMMAND.");
+            if(data.type === 'msg') {
+                printLog(data.sender, data.text);
+                SoundFX.msg();
+                VoiceSys.speak(data.text); // Voice Feature Restored
+            } else if (data.type === 'file') {
+                printFile(data.sender, data.fileData, data.fileName, data.fileType);
+                SoundFX.msg();
+                VoiceSys.speak("File received.");
+            } else if (data.type === 'join') {
+                printLog("SYSTEM", `${data.sender} HAS CONNECTED.`);
+            } else if (data.type === 'heartbeat') {
+                // Already handled by updateActiveNode
             }
         }
 
-        // --- UI UTILS ---
-        function printLog(sender, text) {
-            const container = document.getElementById('console-output');
+        // --- ACTIVE USERS (Presence) ---
+        function updateActiveNode(user) {
+            activeNodes.set(user, Date.now());
+            updateHeaderNodes();
+        }
+
+        function pruneActiveNodes() {
+            const now = Date.now();
+            for (let [user, lastSeen] of activeNodes) {
+                if (now - lastSeen > 15000) activeNodes.delete(user);
+            }
+            updateHeaderNodes();
+        }
+
+        function updateHeaderNodes() {
+            const count = activeNodes.size;
+            document.getElementById('active-nodes').innerText = `NODES: ${count}`;
+        }
+        
+        function listUsers() {
+            let users = Array.from(activeNodes.keys()).join(', ');
+            printLog("SYSTEM", `ACTIVE OPERATIVES: [ ${users} ]`);
+        }
+
+        // --- UI RENDER ---
+        function printLog(sender, content, isHtml=false) {
+            const box = document.getElementById('console-output');
             const div = document.createElement('div');
             div.className = 'line';
+            const time = new Date().toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit'});
             
-            const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" });
+            let colorClass = sender === 'SYSTEM' ? 'sys' : 'user';
             
-            let userClass = 'user';
-            let senderDisplay = sender;
-            
-            if (sender === 'SYSTEM') {
-                userClass = 'sys';
-                senderDisplay = '>> SYSTEM';
-            } else if (sender === 'ERROR') {
-                userClass = 'status-offline'; 
-            }
-
-            div.innerHTML = `
-                <span class="ts">[${time}]</span>
-                <span class="${userClass}">${senderDisplay}:</span>
-                <span class="msg-text">${text}</span>
-            `;
-
-            container.appendChild(div);
-            container.scrollTop = container.scrollHeight;
+            div.innerHTML = `<span class="ts">[${time}]</span><span class="${colorClass}">${sender}:</span><span class="msg-content">${isHtml ? content : escapeHtml(content)}</span>`;
+            box.appendChild(div);
+            box.scrollTop = box.scrollHeight;
         }
+
+        function escapeHtml(text) { return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
         function updateStatus(online) {
             const el = document.getElementById('net-stat');
-            if (online) {
-                el.innerText = "ONLINE (SECURE)";
-                el.className = "status-badge";
-                el.style.background = "var(--term-green)";
-            } else {
-                el.innerText = "OFFLINE";
-                el.className = "status-badge status-offline";
+            el.innerText = online ? "ONLINE (SECURE)" : "OFFLINE";
+            el.className = online ? "status-badge" : "status-badge status-offline";
+        }
+
+        // --- FILE HANDLING ---
+        function handleFileUpload(input) {
+            const file = input.files[0];
+            if(!file) return;
+            if(file.size > 800000) { printLog("SYSTEM", "ERROR: FILE TOO LARGE (MAX 800KB)."); return; }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const base64 = e.target.result;
+                publish(fullTopic, { type: 'file', sender: username, fileName: file.name, fileType: file.type, fileData: base64 });
+                printFile(username, base64, file.name, file.type);
+            };
+            reader.readAsDataURL(file);
+            input.value = ''; 
+        }
+
+        function printFile(sender, data, name, type) {
+            let html = '';
+            if(type.startsWith('image/')) html = `<br><img src="${data}" class="chat-img">`;
+            else if (type.startsWith('video/')) html = `<br><video src="${data}" controls class="chat-video"></video>`;
+            else html = `<br><a href="${data}" download="${name}" class="file-link">[DOWNLOAD: ${name}]</a>`;
+            printLog(sender, `SHARED DATA: ${name} ${html}`, true);
+        }
+
+        // --- WEBRTC & SLIDING PANEL ---
+        function togglePanel() {
+            document.getElementById('call-panel').classList.toggle('open');
+        }
+
+        async function startCall() {
+            if(isInCall) { togglePanel(); return; }
+            printLog("SYSTEM", "INITIALIZING ENCRYPTED FEED...");
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                isInCall = true;
+                
+                document.getElementById('call-panel').classList.add('open');
+                document.getElementById('panel-toggle').style.display = 'inline-block';
+                addVideoNode(localStream, username, true);
+
+                publish(signalTopic, { type: 'call-init', sender: username });
+            } catch(e) { printLog("ERROR", "HARDWARE ACCESS DENIED."); }
+        }
+
+        function leaveCall() {
+            if(localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+            Object.values(peers).forEach(p => p.close());
+            peers = {};
+            
+            document.getElementById('call-panel').classList.remove('open');
+            document.getElementById('panel-toggle').style.display = 'none';
+            document.getElementById('video-grid').innerHTML = '';
+            
+            publish(signalTopic, { type: 'call-left', sender: username });
+            isInCall = false;
+            printLog("SYSTEM", "LINK SEVERED.");
+        }
+
+        // --- SIGNALING ---
+        async function handleSignal(data) {
+            if(data.sender === username) return;
+
+            switch(data.type) {
+                case 'call-init':
+                    printLog("SYSTEM", `INCOMING SECURE FEED FROM ${data.sender}.`);
+                    printLog("SYSTEM", `<button onclick="joinCall('${data.sender}')" style="background:var(--term-green);border:none;cursor:pointer;font-weight:bold;">[ JOIN FEED ]</button>`, true);
+                    SoundFX.alert();
+                    break;
+                case 'join-req':
+                    if(isInCall) createPeer(data.sender, true);
+                    break;
+                case 'offer':
+                    if(isInCall) handleOffer(data.sender, data.sdp);
+                    break;
+                case 'answer':
+                    if(isInCall && peers[data.sender]) peers[data.sender].setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    break;
+                case 'ice':
+                    if(isInCall && peers[data.sender]) peers[data.sender].addIceCandidate(new RTCIceCandidate(data.candidate));
+                    break;
+                case 'call-left':
+                    if(peers[data.sender]) {
+                        peers[data.sender].close(); delete peers[data.sender];
+                        removeVideoNode(data.sender);
+                        printLog("SYSTEM", `${data.sender} DISCONNECTED FEED.`);
+                    }
+                    break;
             }
         }
 
-        document.body.onclick = () => {
-            if (!document.getElementById('terminal').classList.contains('hidden')) {
-                document.getElementById('cmd-input').focus();
+        async function joinCall() {
+            if(isInCall) { togglePanel(); return; }
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                isInCall = true;
+                document.getElementById('call-panel').classList.add('open');
+                document.getElementById('panel-toggle').style.display = 'inline-block';
+                addVideoNode(localStream, username, true);
+                publish(signalTopic, { type: 'join-req', sender: username });
+            } catch(e) { printLog("ERROR", "HARDWARE ACCESS DENIED."); }
+        }
+
+        function createPeer(target, initiator) {
+            const pc = new RTCPeerConnection(rtcConfig);
+            peers[target] = pc;
+            localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+            pc.onicecandidate = e => { if(e.candidate) publish(signalTopic, { type: 'ice', sender: username, target: target, candidate: e.candidate }); };
+            pc.ontrack = e => { if(!document.getElementById('vid-'+target)) addVideoNode(e.streams[0], target, false); };
+
+            if(initiator) {
+                pc.createOffer().then(o => { pc.setLocalDescription(o); publish(signalTopic, { type: 'offer', sender: username, target: target, sdp: o }); });
             }
-        };
+            return pc;
+        }
+
+        async function handleOffer(sender, sdp) {
+            const pc = createPeer(sender, false);
+            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            const ans = await pc.createAnswer();
+            await pc.setLocalDescription(ans);
+            publish(signalTopic, { type: 'answer', sender: username, target: sender, sdp: ans });
+        }
+
+        // --- VIDEO UI ---
+        function addVideoNode(stream, label, muted) {
+            const div = document.createElement('div');
+            div.className = 'vid-container';
+            div.id = 'vid-' + label;
+            const v = document.createElement('video');
+            v.srcObject = stream; v.autoplay = true; v.playsInline = true; if(muted) v.muted = true;
+            div.innerHTML = `<div class="vid-label">${label}</div>`;
+            div.prepend(v);
+            document.getElementById('video-grid').appendChild(div);
+        }
+        function removeVideoNode(label) { const el = document.getElementById('vid-'+label); if(el) el.remove(); }
+        
+        function toggleMute() {
+            if(localStream) {
+                localStream.getAudioTracks()[0].enabled = !localStream.getAudioTracks()[0].enabled;
+                document.getElementById('btn-mute').classList.toggle('btn-active');
+            }
+        }
+        function toggleCam() {
+            if(localStream) {
+                localStream.getVideoTracks()[0].enabled = !localStream.getVideoTracks()[0].enabled;
+                document.getElementById('btn-cam').classList.toggle('btn-active');
+            }
+        }
 
     </script>
 </body>
